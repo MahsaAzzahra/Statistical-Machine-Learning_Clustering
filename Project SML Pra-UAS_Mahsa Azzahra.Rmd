@@ -1,0 +1,575 @@
+---
+title: "Project Statistical Machine Learning"
+author: "Mahsa Azzahra (3338240004)"
+date: "2026-06-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# 1. Deskripsi Dataset
+
+Dataset yang digunakan adalah **Ecoli Dataset** yang bersumber dari [ecoli dataset](https://archive.ics.uci.edu/dataset/39/ecoli). Dataset ini digunakan untuk memprediksi **lokasi protein dalam sel bakteri *Escherichia coli*** berdasarkan fitur biokimia dari sekuens protein.
+
+| Informasi        | Detail                              |
+|------------------|-------------------------------------|
+| Sumber           | UCI Machine Learning Repository     |
+| Pembuat          | Kenta Nakai & Kenji Kanehisa (1991) |
+| Jumlah observasi | 336                                 |
+| Jumlah fitur     | 7 fitur numerik kontinu             |
+| Jumlah kelas     | 8 kelas lokalisasi protein          |
+| Tipe tugas       | Unsupervised clustering             |
+
+**Deskripsi setiap variabel:**
+
+| Variabel | Deskripsi |
+|-------------------------------------|----------------------------------|
+| `Seq_Name` | Nama sekuens protein (identifier, tidak digunakan dalam clustering) |
+| `mcg` | Skor metode McGeoch untuk pengenalan *signal sequence* |
+| `gvh` | Skor metode von Heijne untuk pengenalan *signal sequence* |
+| `lip` | Skor konsensus Signal Peptidase II von Heijne (**biner**: 0.48 atau 1.00) |
+| `chg` | Keberadaan muatan pada N-terminus lipoprotein prediksi (**biner**: 0.50 atau 1.00) |
+| `aac` | Skor analisis diskriminan komposisi asam amino protein membran luar dan periplasma |
+| `alm1` | Skor program prediksi *membrane-spanning region* ALOM |
+| `alm2` | Skor ALOM setelah mengecualikan *cleavable signal regions* dari sekuens |
+| `Class` | Label kelas lokalisasi protein (target) |
+
+**Deskripsi kelas target:**
+
+| Kelas | Kepanjangan / Lokasi                           |
+|-------|------------------------------------------------|
+| `cp`  | Cytoplasm                                      |
+| `im`  | Inner membrane (tanpa *signal sequence*)       |
+| `pp`  | Periplasm                                      |
+| `imU` | Inner membrane (*uncleavable signal sequence*) |
+| `om`  | Outer membrane                                 |
+| `omL` | Outer membrane lipoprotein                     |
+| `imL` | Inner membrane lipoprotein                     |
+| `imS` | Inner membrane (*cleavable signal sequence*)   |
+
+# 2. Import Data
+
+```{r}
+library(factoextra)    
+library(ggplot2)       
+library(mclust)        
+library(kernlab)       
+library(clusterCrit)   
+library(cluster)       
+library(fpc)           
+library(kmed)          
+library(DT) 
+ecoli <- read.table("ecoli.data", header = FALSE)
+colnames(ecoli) <- c("Seq_Name", "mcg", "gvh", "lip", "chg",
+                     "aac", "alm1", "alm2", "Class")
+
+DT::datatable(ecoli, options = list(pageLength = 10),
+              caption = "Tabel: Dataset Ecoli (336 observasi)")
+```
+
+# 3. Eksplorasi Data
+
+```{r}
+cat("Jumlah baris (observasi) :", nrow(ecoli), "\n")
+cat("Jumlah kolom (variabel)  :", ncol(ecoli), "\n\n")
+str(ecoli)
+```
+
+Dataset Ecoli terdiri atas 336 observasi (baris) dan 9 variabel (kolom). Variabel Seq_Name merupakan identitas protein yang bertipe karakter (character), sedangkan tujuh variabel lainnya (mcg, gvh, lip, chg, aac, alm1, dan alm2) bertipe numerik (numeric) yang digunakan sebagai fitur dalam proses clustering. Variabel Class bertipe karakter dan menunjukkan kelas atau lokasi protein pada bakteri Escherichia coli. Struktur data menunjukkan bahwa seluruh variabel telah terbaca dengan tipe data yang sesuai sehingga data siap untuk tahap eksplorasi dan analisis clustering selanjutnya.
+
+```{r}
+missing_summary <- data.frame(
+  Variabel = names(ecoli),
+  Missing = colSums(is.na(ecoli)),
+  Persentase = round(colSums(is.na(ecoli)) / nrow(ecoli) * 100, 2)
+)
+
+knitr::kable(
+  missing_summary,
+  caption = "Ringkasan Missing Value"
+)
+cat("Jumlah Data Duplikat :", sum(duplicated(ecoli)), "\n")
+```
+
+Hasil pemeriksaan kualitas data menunjukkan bahwa tidak terdapat nilai hilang (missing value) pada seluruh variabel. Dengan demikian, seluruh 336 observasi memiliki data yang lengkap sehingga tidak diperlukan proses imputasi maupun penghapusan data akibat missing value. Selain itu, hasil pemeriksaan juga menunjukkan bahwa tidak terdapat data duplikat pada dataset (jumlah data duplikat = 0). Artinya, setiap observasi merepresentasikan protein yang unik dan tidak ada pengamatan yang tercatat lebih dari satu kali.
+
+```{r}
+cat("Statistik Deskriptif 7 Fitur Numerik:\n")
+summary(ecoli[, 2:8])
+```
+
+Berdasarkan statistik deskriptif, sebagian besar fitur numerik memiliki nilai rata-rata yang mendekati 0,5, yaitu mcg (0,5001), gvh (0,5000), aac (0,5000), alm1 (0,5002), dan alm2 (0,4997). Selain itu, nilai median pada hampir seluruh variabel juga relatif dekat dengan nilai rata-ratanya, yang menunjukkan bahwa distribusi data cenderung seimbang dan tidak terdapat indikasi kemencengan (skewness) yang ekstrem. Variabel mcg, gvh, alm1, dan alm2 memiliki rentang nilai yang cukup lebar sehingga berpotensi memberikan informasi yang baik dalam proses pengelompokan.
+
+Di sisi lain, variabel lip dan chg memiliki variasi yang lebih terbatas dibandingkan variabel lainnya. Variabel lip hanya memiliki rentang nilai 0,48–1,00, sedangkan chg memiliki rentang 0,50–1,00 dengan sebagian besar observasi berada pada nilai minimum tersebut. Secara keseluruhan, seluruh fitur numerik berada pada skala pengukuran yang relatif seragam, yaitu antara 0 dan 1.
+
+```{r}
+# Distribusi kelas dengan persentase
+tbl_kelas <- as.data.frame(table(ecoli$Class))
+colnames(tbl_kelas) <- c("Kelas", "Jumlah")
+tbl_kelas$Persentase <- round(tbl_kelas$Jumlah / nrow(ecoli) * 100, 1)
+cat("Distribusi Kelas:\n")
+print(tbl_kelas)
+cat("Jumlah kelas unik:", length(unique(ecoli$Class)), "\n")
+```
+
+Distribusi kelas pada dataset Ecoli menunjukkan adanya 8 kelas lokalisasi protein dengan sebaran yang tidak seimbang. Kelas cp merupakan kelas dominan dengan 143 observasi (42,6%), diikuti oleh im sebanyak 77 observasi (22,9%) dan pp sebanyak 52 observasi (15,5%). Sebaliknya, kelas imL dan imS hanya memiliki masing-masing 2 observasi (0,6%), sedangkan omL hanya terdiri dari 5 observasi (1,5%). Ketidakseimbangan distribusi ini menunjukkan bahwa beberapa kelas memiliki jumlah anggota yang sangat sedikit dibandingkan kelas lainnya, sehingga proses clustering berpotensi lebih mudah mengenali kelompok besar dibandingkan kelompok yang berukuran sangat kecil.
+
+```{r fig.width=7, fig.height=4}
+# Visualisasi distribusi kelas
+ggplot(tbl_kelas, aes(x = reorder(Kelas, -Jumlah), y = Jumlah, fill = Kelas)) +
+  geom_bar(stat = "identity", color = "white") +
+  geom_text(aes(label = paste0(Jumlah, "\n(", Persentase, "%)")),
+            vjust = -0.3, size = 3.2) +
+  labs(title = "Distribusi Kelas pada Data Ecoli",
+       x = "Kelas Lokalisasi Protein", y = "Jumlah Observasi") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  ylim(0, 170)
+```
+
+Distribusi kelas sangat tidak seimbang (*imbalanced*). Kelas **cp** mendominasi dengan 143 observasi (42.6%), sedangkan kelas **imL** dan **imS** hanya memiliki masing-masing 2 observasi (0.6%). Rasio imbalance mencapai **72:1**. Tiga kelas terkecil, yaitu `omL` (5 obs), `imS` (2 obs), dan `imL` (2 obs), sehingga berjumlah hanya 9 observasi (2.7% dari seluruh data).
+
+```{r}
+cat("Range setiap fitur:\n")
+print(apply(ecoli[, 2:8], 2, range))
+```
+
+```{r}
+cat("Matriks Korelasi Antar Fitur:\n")
+print(round(cor(ecoli[, 2:8]), 3))
+```
+
+```{r fig.width=7, fig.height=4}
+# Heatmap korelasi
+cor_mat  <- cor(ecoli[, 2:8])
+cor_long <- data.frame(
+  Var1  = rep(colnames(cor_mat), each  = ncol(cor_mat)),
+  Var2  = rep(colnames(cor_mat), times = ncol(cor_mat)),
+  value = as.vector(cor_mat)
+)
+ggplot(cor_long, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(value, 2)), size = 3.2) +
+  scale_fill_gradient2(low = "#3B82F6", high = "#EF4444", mid = "white",
+                       midpoint = 0, limits = c(-1, 1), name = "r") +
+  labs(title = "Heatmap Korelasi Antar Fitur", x = NULL, y = NULL) +
+  theme_bw()
+```
+
+Berdasarkan matriks korelasi dan heatmap, sebagian besar pasangan variabel memiliki korelasi yang rendah hingga sedang, sehingga setiap fitur cenderung memberikan informasi yang berbeda dalam menggambarkan karakteristik protein. Korelasi tertinggi ditemukan antara alm1 dan alm2 dengan nilai r = 0,809, yang menunjukkan hubungan positif sangat kuat. Hal ini wajar karena kedua variabel sama-sama berasal dari metode prediksi ALOM yang digunakan untuk mengidentifikasi kemungkinan keberadaan membrane-spanning region pada protein. Selain itu, terdapat korelasi positif sedang antara mcg dan gvh sebesar r = 0,455, yang mengindikasikan bahwa kedua fitur memiliki keterkaitan dalam mengukur karakteristik yang berhubungan dengan pengenalan signal sequence.
+
+Di luar kedua pasangan tersebut, sebagian besar korelasi berada di bawah |0,3|, bahkan beberapa mendekati nol, seperti hubungan antara chg dengan variabel lainnya. Kondisi ini menunjukkan bahwa tingkat multikolinearitas pada dataset relatif rendah sehingga masing-masing variabel masih memberikan kontribusi informasi yang unik dalam proses clustering. Dengan demikian, seluruh fitur numerik tetap dipertahankan dalam analisis karena tidak terdapat indikasi adanya variabel yang benar-benar redundan atau perlu dieliminasi berdasarkan korelasi yang sangat tinggi.
+
+```{r}
+# Analisis fitur biner lip dan chg
+cat("Nilai unik fitur lip:", sort(unique(ecoli$lip)), "\n")
+cat("Frekuensi lip = 0.48:", sum(ecoli$lip == 0.48), "obs (",
+    round(mean(ecoli$lip == 0.48) * 100, 1), "%)\n")
+cat("Frekuensi lip = 1.00:", sum(ecoli$lip == 1.00), "obs\n\n")
+
+cat("Nilai unik fitur chg:", sort(unique(ecoli$chg)), "\n")
+cat("Frekuensi chg = 0.50:", sum(ecoli$chg == 0.50), "obs (",
+    round(mean(ecoli$chg == 0.50) * 100, 1), "%)\n")
+cat("Frekuensi chg = 1.00:", sum(ecoli$chg == 1.00), "obs\n")
+```
+
+Dua temuan penting:
+
+- **`lip`**: Biner (0.48 atau 1.00). Sebanyak 97% observasi bernilai 0.48. Nilai 1.00 hanya muncul pada kelas `omL` dan `imL`, fitur ini sangat diskriminatif untuk dua kelas tersebut, namun nyaris tidak bervariasi untuk kelas lainnya.
+- **`chg`**: Biner (0.50 atau 1.00). Sebanyak 99.7% observasi bernilai 0.50. Hanya 1 observasi (kelas `imL`) bernilai 1.00. Fitur ini memiliki variansi hampir nol sehingga kontribusinya untuk proses clustering sangat minim.
+
+# 4. Keputusan Scaling
+
+**Keputusan: Scaling TIDAK dilakukan**, dengan alasan sebagai berikut:
+
+1. **Semua fitur sudah berada pada rentang [0, 1]**: `mcg` (0.00–0.89), `gvh` (0.16–1.00), `aac` (0.00–0.88), `alm1` (0.03–1.00), `alm2` (0.00–0.99). Tidak ada perbedaan skala yang perlu dikoreksi.
+
+2. **`lip` dan `chg` adalah atribut biner**: Jika dilakukan z-score scaling, nilai-nilai biner ini akan terdistorsi karena standar deviasinya sangat kecil — khususnya `chg` yang 99.7% bernilai 0.50 akan menghasilkan pembagian nilai ekstrem pasca-scaling.
+
+3. **Mean seluruh fitur ≈ 0.5**: Secara alami semua fitur sudah ternormalisasi. Melakukan scaling pada data yang sudah proporsional tidak memberikan manfaat dan berpotensi mendistorsi struktur data.
+
+# 5. Persiapan Data
+
+```{r}
+# 7 fitur numerik sebagai input clustering
+df_features <- ecoli[, 2:8]
+
+# Label kelas integer untuk validasi eksternal
+# Urutan alfabetis: cp=1, im=2, imL=3, imS=4, imU=5, om=6, omL=7, pp=8
+new_labels <- as.integer(as.factor(ecoli$Class))
+
+cat("Pemetaan label kelas:\n")
+peta <- data.frame(
+  Kelas         = levels(as.factor(ecoli$Class)),
+  Label_Integer = 1:length(unique(ecoli$Class)),
+  Jumlah        = as.integer(table(ecoli$Class))
+)
+print(peta)
+
+# Matriks jarak Euclidean (digunakan untuk validasi internal)
+dist_mat <- dist(df_features)
+```
+
+Untuk keperluan validasi eksternal, variabel kelas (`Class`) dikonversi menjadi label numerik menggunakan fungsi `as.factor()`, yang secara otomatis mengurutkan kategori berdasarkan abjad. Hasil pemetaan menunjukkan bahwa kelas `cp` diberi label 1, `im` label 2, `imL` label 3, `imS` label 4, `imU` label 5, `om` label 6, `omL` label 7, dan `pp` label 8. Proses ini dilakukan agar label kelas dapat digunakan dalam perhitungan metrik validasi seperti Rand Index, Accuracy, dan Purity yang memerlukan input berupa nilai numerik.
+
+Selain menunjukkan pemetaan label, tabel tersebut juga memperlihatkan distribusi jumlah observasi pada setiap kelas. Kelas `cp` merupakan kelas terbesar dengan 143 observasi, sedangkan kelas `imL` dan `imS` merupakan kelas terkecil dengan masing-masing hanya 2 observasi. Perbedaan ukuran kelas yang cukup besar ini perlu diperhatikan karena dapat memengaruhi kemampuan metode clustering dalam mengidentifikasi kelompok-kelompok yang berukuran sangat kecil.
+
+# 6. Penetuan Jumlah Cluster Optimal
+
+```{r fig.width=7, fig.height=4}
+## Metode 1: Elbow Method
+set.seed(123)
+fviz_nbclust(
+  df_features,
+  kmeans,
+  method = "wss"
+) +
+labs(
+  title = "Elbow Method",
+  x = "Jumlah Cluster (k)",
+  y = "Within Cluster Sum of Squares"
+) +
+theme_bw()
+
+## Metode 2: Silhouette Method
+set.seed(123)
+fviz_nbclust(
+  df_features,
+  kmeans,
+  method = "silhouette"
+) +
+labs(
+  title = "Silhouette Method",
+  x = "Jumlah Cluster (k)",
+  y = "Average Silhouette Width"
+) +
+theme_bw()
+```
+
+Penentuan jumlah cluster dilakukan menggunakan Elbow Method dan Silhouette Method. Pada grafik Elbow Method terlihat penurunan nilai Within Cluster Sum of Squares (WCSS) yang sangat tajam dari k = 1 hingga k = 3, kemudian kurva mulai melandai setelahnya. Pola ini menunjukkan bahwa penambahan cluster setelah k = 3 hanya memberikan pengurangan variasi dalam cluster yang relatif kecil, sehingga titik siku (elbow point) dapat diidentifikasi pada k = 3. Dengan demikian, berdasarkan Elbow Method, jumlah cluster yang optimal adalah tiga cluster.
+
+Hasil tersebut diperkuat oleh Silhouette Method yang menunjukkan nilai average silhouette width tertinggi pada k = 3 dengan nilai sekitar 0,42. Nilai silhouette yang lebih tinggi menunjukkan bahwa objek dalam suatu cluster memiliki kemiripan yang tinggi dengan anggota cluster yang sama dan memiliki perbedaan yang cukup jelas dengan cluster lain. Setelah k = 3, nilai silhouette cenderung menurun sehingga kualitas pemisahan cluster menjadi lebih rendah. Oleh karena itu, berdasarkan kedua metode penentuan jumlah cluster tersebut, penelitian ini menggunakan k = 3 pada seluruh metode clustering yang diterapkan.
+
+# 7. Metode Clustering
+
+Jumlah cluster ditetapkan sebesar k = 3 berdasarkan hasil Elbow Method dan Silhouette Method yang secara konsisten menunjukkan bahwa tiga cluster merupakan struktur pengelompokan yang paling optimal pada dataset Ecoli.
+
+```{r}
+k_opt <- 3
+```
+
+## 7.1. Metode 1: K-Means Clustering
+
+K-Means adalah metode berbasis jarak yang membagi data menjadi k cluster dengan meminimalkan *within-cluster sum of squares* (WCSS). Setiap observasi ditetapkan ke cluster dengan centroid terdekat secara iteratif.
+
+```{r}
+set.seed(123)
+km_res   <- kmeans(df_features, centers = k_opt, nstart = 25)
+label_km <- km_res$cluster
+
+cat("Distribusi cluster K-Means:\n")
+print(table(label_km))
+```
+
+Hasil K-Means dengan k = 3 menghasilkan distribusi cluster yang relatif seimbang, yaitu cluster 1 berisi 82 observasi (24,4%), cluster 2 berisi 149 observasi (44,3%), dan cluster 3 berisi 105 observasi (31,3%). Tidak terdapat cluster yang terlalu kecil maupun terlalu besar secara ekstrem, sehingga menunjukkan bahwa proses clustering mampu membagi data ke dalam tiga kelompok utama dengan ukuran yang cukup proporsional.
+
+## 7.2. Metode 2: GMM (Model-Based Clustering)
+
+GMM (*Gaussian Mixture Model*) mengasumsikan data berasal dari campuran distribusi Gaussian. Setiap cluster dicirikan oleh vektor mean dan matriks kovarians. Estimasi parameter menggunakan algoritma EM (*Expectation-Maximization*). Berbeda dengan K-Means, GMM memberikan **probabilitas keanggotaan** setiap observasi ke setiap cluster.
+
+```{r}
+set.seed(123)
+gmm_res   <- Mclust(df_features, G = k_opt)
+label_gmm <- as.integer(gmm_res$classification)
+
+cat("Distribusi cluster GMM:\n")
+print(table(label_gmm))
+```
+
+Hasil Model-Based Clustering (GMM) dengan k = 3 menghasilkan distribusi cluster yang cukup seimbang, yaitu cluster 1 berisi 148 observasi (44,0%), cluster 2 berisi 83 observasi (24,7%), dan cluster 3 berisi 105 observasi (31,3%). Menariknya, distribusi ini sangat mirip dengan hasil K-Means, yang menunjukkan bahwa kedua metode sama-sama mengidentifikasi tiga kelompok utama dalam data. Tidak terdapat cluster dengan jumlah anggota yang sangat kecil, sehingga struktur cluster yang terbentuk relatif stabil dan representatif terhadap keseluruhan dataset.
+
+## 7.3. Metode 3: Spectral Clustering
+
+Spectral Clustering mentransformasi data ke representasi *graph* menggunakan *similarity matrix*, kemudian melakukan dekomposisi nilai eigen (*eigendecomposition*) dari matriks Laplacian. K-Means diterapkan pada ruang eigenvector hasil transformasi, sehingga mampu mendeteksi cluster **non-konveks** yang tidak bisa ditangani K-Means biasa.
+
+```{r}
+set.seed(123)
+spec_res   <- specc(as.matrix(df_features), centers = k_opt)
+label_spec <- as.integer(spec_res)
+
+cat("Distribusi cluster Spectral:\n")
+print(table(label_spec))
+```
+
+Hasil Spectral Clustering dengan k = 3 menghasilkan distribusi cluster yang kurang seimbang dibandingkan K-Means dan GMM. Cluster 1 hanya berisi 10 observasi (3,0%), cluster 2 berisi 102 observasi (30,4%), sedangkan cluster 3 mendominasi dengan 224 observasi (66,7%). Kondisi ini menunjukkan bahwa Spectral Clustering cenderung mengelompokkan sebagian besar observasi ke dalam satu cluster besar dan membentuk satu cluster yang sangat kecil. Oleh karena itu, berdasarkan distribusi anggotanya, hasil pengelompokan Spectral Clustering terlihat kurang proporsional dibandingkan K-Means dan GMM yang menghasilkan ukuran cluster yang lebih seimbang.
+
+# 8. Visualisasi Hasil Clustering
+
+Karena data memiliki 7 variabel, hasil clustering diproyeksikan ke dua dimensi menggunakan **PCA** (Principal Component Analysis). Fungsi `fviz_cluster()` dari paket `factoextra` melakukan proyeksi ini secara otomatis.
+
+```{r fig.width=8, fig.height=5}
+fviz_cluster(km_res,
+             data         = df_features,
+             geom         = "point",
+             ellipse.type = "norm",
+             main         = "Metode 1: K-Means (k=3)") +
+  theme_bw()
+```
+
+Visualisasi hasil K-Means menunjukkan bahwa data berhasil dikelompokkan menjadi tiga cluster yang relatif berbeda pada ruang dua dimensi hasil PCA. Cluster 2 (hijau) dan cluster 3 (biru) tampak terpisah dengan cukup jelas pada sisi kiri dan kanan grafik, sedangkan cluster 1 (merah) berada di bagian tengah dengan penyebaran yang lebih luas. Meskipun masih terdapat sedikit tumpang tindih antar batas cluster dan satu observasi yang berada cukup jauh dari kelompok utama, secara keseluruhan K-Means mampu membentuk tiga kelompok yang cukup terstruktur dan dapat dibedakan berdasarkan karakteristik datanya.
+
+```{r fig.width=8, fig.height=5}
+fviz_cluster(list(data = df_features, cluster = label_gmm),
+             geom         = "point",
+             ellipse.type = "norm",
+             main         = "Metode 2: GMM (G=3)") +
+  theme_bw()
+```
+
+Visualisasi hasil GMM menunjukkan bahwa data berhasil dipisahkan menjadi tiga cluster yang cukup jelas berdasarkan distribusi probabilistiknya. Cluster 1 (merah) terkonsentrasi pada sisi kiri grafik, cluster 3 (biru) berada pada sisi kanan, sedangkan cluster 2 (hijau) menempati area tengah hingga atas dengan penyebaran yang lebih luas. Meskipun masih terdapat sedikit tumpang tindih antara cluster 1 dan cluster 2 serta antara cluster 2 dan cluster 3, pemisahan antar kelompok secara umum terlihat cukup baik. Selain itu, cluster 2 mampu mengakomodasi beberapa observasi yang berada jauh dari pusat data utama, sehingga menunjukkan fleksibilitas GMM dalam menangani variasi bentuk dan sebaran data dibandingkan metode yang hanya berbasis jarak ke centroid.
+
+```{r fig.width=8, fig.height=5}
+fviz_cluster(list(data = df_features, cluster = label_spec),
+             geom         = "point",
+             ellipse.type = "norm",
+             main         = "Metode 3: Spectral (k=3)") +
+  theme_bw()
+```
+
+Visualisasi hasil Spectral Clustering menunjukkan bahwa data berhasil dipisahkan menjadi tiga cluster yang cukup berbeda, terutama antara cluster 2 (hijau) dan cluster 3 (biru) yang memiliki batas pemisah yang relatif jelas pada dimensi pertama. Namun, cluster 1 (merah) memiliki penyebaran yang sangat luas dengan ukuran cluster yang jauh lebih kecil dibandingkan dua cluster lainnya, sehingga terlihat kurang kompak dan mengandung beberapa observasi yang berada jauh dari pusat kelompok utama. Kondisi ini menunjukkan bahwa Spectral Clustering cenderung mengisolasi sejumlah kecil observasi yang memiliki karakteristik berbeda ke dalam satu cluster tersendiri, sementara sebagian besar data terkonsentrasi pada dua cluster lainnya.
+
+# 9. Evaluasi & Validasi Clustering
+
+## 9.1 Kriteria Eksternal
+
+Kriteria eksternal memvalidasi hasil partisi dengan membandingkannya terhadap label kelas yang sudah diketahui (*gold standard*), yaitu kolom `Class` pada data ecoli.
+
+### Cluster Accuracy
+
+Diasumsikan nilai diagonal tabel kontingensi antara label cluster hasil dan label kelas asli adalah nilai optimal.
+
+$$A = \sum_{i=1}^{k} \frac{n_{ii}}{n_{..}}$$
+
+```{r}
+tab_km_ext   <- table(label_km,   new_labels)
+tab_gmm_ext  <- table(label_gmm,  new_labels)
+tab_spec_ext <- table(label_spec, new_labels)
+
+acc_km   <- sum(diag(tab_km_ext))   / sum(tab_km_ext)
+acc_gmm  <- sum(diag(tab_gmm_ext))  / sum(tab_gmm_ext)
+acc_spec <- sum(diag(tab_spec_ext)) / sum(tab_spec_ext)
+
+cat("Cluster Accuracy:\n")
+cat("  K-Means  :", round(acc_km,   4), "\n")
+cat("  GMM      :", round(acc_gmm,  4), "\n")
+cat("  Spectral :", round(acc_spec, 4), "\n")
+```
+
+Nilai Cluster Accuracy ditampilkan sebagai informasi tambahan. Namun, karena jumlah cluster optimal yang digunakan adalah 3 sedangkan label asli dataset terdiri atas 8 kelas, maka interpretasi metrik ini menjadi kurang representatif. Oleh karena itu, evaluasi utama difokuskan pada Rand Index, Purity, dan Silhouette Width.
+
+### Cluster Purity
+
+Purity mengukur seberapa homogen setiap cluster terhadap label kelas asli. Untuk setiap cluster, diambil kelas yang paling dominan (*majority class*).
+
+$$P = \sum_{i=1}^{k} \frac{n_i}{n_{..}} \left( \max_{j \in K} \frac{n_{ij}}{n_i} \right)$$
+
+```{r}
+tab_km_pur   <- table(label_km,   ecoli$Class)
+tab_gmm_pur  <- table(label_gmm,  ecoli$Class)
+tab_spec_pur <- table(label_spec, ecoli$Class)
+
+purity_km   <- sum(apply(tab_km_pur,   1, max)) / nrow(ecoli)
+purity_gmm  <- sum(apply(tab_gmm_pur,  1, max)) / nrow(ecoli)
+purity_spec <- sum(apply(tab_spec_pur, 1, max)) / nrow(ecoli)
+
+cat("Cluster Purity:\n")
+cat("  K-Means  :", round(purity_km,   4), "\n")
+cat("  GMM      :", round(purity_gmm,  4), "\n")
+cat("  Spectral :", round(purity_spec, 4), "\n")
+```
+
+Berdasarkan nilai Cluster Purity, metode K-Means menghasilkan nilai tertinggi yaitu 0,7500, diikuti oleh GMM sebesar 0,7470, dan Spectral Clustering sebesar 0,6399. Nilai Purity menunjukkan proporsi anggota cluster yang berasal dari kelas dominan pada masing-masing cluster, sehingga semakin mendekati 1 maka cluster yang terbentuk semakin homogen. Hasil ini menunjukkan bahwa K-Means dan GMM memiliki kemampuan yang hampir sama dalam membentuk cluster yang relatif homogen, dengan sekitar 75% observasi berada pada cluster yang didominasi oleh satu kelas tertentu. Sementara itu, Spectral Clustering menghasilkan nilai Purity yang lebih rendah, yang mengindikasikan bahwa anggota dalam cluster masih lebih banyak berasal dari berbagai kelas yang berbeda. Oleh karena itu, berdasarkan metrik Purity, K-Means memberikan hasil terbaik, meskipun perbedaannya dengan GMM sangat kecil.
+
+### Rand Index
+
+Rand Index mengukur konsistensi pasangan observasi antara dua partisi: $B$ (pasangan konsisten) dan $D$ (pasangan tidak konsisten) (Rand, 1971).
+
+$$RI = \frac{B}{B + D}$$
+
+```{r}
+ri_km   <- extCriteria(as.integer(label_km),   as.integer(new_labels), "Rand")$rand
+ri_gmm  <- extCriteria(as.integer(label_gmm),  as.integer(new_labels), "Rand")$rand
+ri_spec <- extCriteria(as.integer(label_spec), as.integer(new_labels), "Rand")$rand
+
+cat("Rand Index:\n")
+cat("  K-Means  :", round(ri_km,   4), "\n")
+cat("  GMM      :", round(ri_gmm,  4), "\n")
+cat("  Spectral :", round(ri_spec, 4), "\n")
+```
+
+Berdasarkan nilai Rand Index, metode GMM menghasilkan nilai tertinggi yaitu 0,8582, sedikit lebih baik dibandingkan K-Means yang memperoleh nilai 0,8562, sedangkan Spectral Clustering memiliki nilai yang lebih rendah yaitu 0,705. Rand Index mengukur tingkat kesesuaian antara hasil clustering dan label kelas asli dengan mempertimbangkan seluruh pasangan observasi, sehingga semakin mendekati 1 menunjukkan hasil pengelompokan yang semakin sesuai. Nilai Rand Index yang tinggi pada K-Means dan GMM menunjukkan bahwa kedua metode mampu mempertahankan struktur kelas pada data dengan sangat baik, sedangkan Spectral Clustering menghasilkan kesesuaian yang lebih rendah. Oleh karena itu, berdasarkan metrik Rand Index, GMM memberikan hasil terbaik, meskipun keunggulannya terhadap K-Means sangat kecil.
+
+## 9.2 Kriteria Internal
+
+Kriteria internal mengevaluasi kualitas partisi menggunakan informasi intrinsik data, **tanpa memerlukan label kelas**. Relevan untuk skenario nyata di mana label tidak tersedia.
+
+### Silhouette Width
+
+Silhouette value objek $i$ menggabungkan *cohesion* ($a_i$: rata-rata jarak ke anggota cluster sendiri) dan *separation* ($b_i$: rata-rata jarak terkecil ke cluster tetangga terdekat).
+
+$$s(i) = \frac{b_i - a_i}{\max(a_i,\, b_i)}, \quad s(i) \in [-1,\,1]$$
+
+Nilai mendekati **1** → cluster terpisah baik; mendekati **−1** → objek kemungkinan salah cluster.
+
+```{r}
+sil_km_obj   <- silhouette(label_km,   dist_mat)
+sil_gmm_obj  <- silhouette(label_gmm,  dist_mat)
+sil_spec_obj <- silhouette(label_spec, dist_mat)
+
+sil_km   <- mean(sil_km_obj[,   3])
+sil_gmm  <- mean(sil_gmm_obj[,  3])
+sil_spec <- mean(sil_spec_obj[, 3])
+
+cat("Silhouette Width (rata-rata):\n")
+cat("  K-Means  :", round(sil_km,   4), "\n")
+cat("  GMM      :", round(sil_gmm,  4), "\n")
+cat("  Spectral :", round(sil_spec, 4), "\n")
+```
+
+Berdasarkan nilai Silhouette Width rata-rata, metode K-Means menghasilkan nilai tertinggi yaitu 0,418, diikuti oleh Spectral Clustering sebesar 0,4151, dan GMM sebesar 0,4077. Nilai silhouette yang lebih tinggi menunjukkan bahwa anggota dalam suatu cluster memiliki kemiripan yang lebih besar dengan anggota cluster yang sama dibandingkan dengan cluster lainnya. Ketiga metode menghasilkan nilai silhouette di atas 0,4 yang menunjukkan kualitas clustering yang cukup baik dan adanya pemisahan cluster yang relatif jelas. Namun, karena K-Means memiliki nilai silhouette tertinggi, metode ini memberikan keseimbangan terbaik antara compactness (kerapatan dalam cluster) dan separation (pemisahan antar cluster), sehingga menjadi metode terbaik berdasarkan metrik Silhouette Width.
+
+### Shadow Value
+
+Shadow value mengukur separasi berdasarkan jarak objek $i$ ke centroid terdekat pertama $c(i)$ dan kedua $\hat{c}(i)$.
+
+$$sh(i) = \frac{2\,d(i,\,c(i))}{d(i,\,c(i)) + d(i,\,\hat{c}(i))}$$
+
+Nilai mendekati **0** → cluster terpisah baik; mendekati **1** → separasi buruk.
+
+```{r}
+shadow_km   <- cluster.stats(dist_mat, label_km)$avg.silwidth
+shadow_gmm  <- cluster.stats(dist_mat, label_gmm)$avg.silwidth
+shadow_spec <- cluster.stats(dist_mat, label_spec)$avg.silwidth
+
+cat("Shadow Value:\n")
+cat("  K-Means  :", round(shadow_km,   4), "\n")
+cat("  GMM      :", round(shadow_gmm,  4), "\n")
+cat("  Spectral :", round(shadow_spec, 4), "\n")
+```
+
+Berdasarkan nilai Shadow Value, metode K-Means menghasilkan nilai tertinggi yaitu 0,4180, diikuti oleh Spectral Clustering sebesar 0,4151, dan GMM sebesar 0,4077. Nilai Shadow Value yang semakin mendekati 1 menunjukkan bahwa objek dalam suatu cluster semakin mirip satu sama lain dan semakin berbeda dengan objek pada cluster lain. Ketiga metode menghasilkan nilai di atas 0,4 yang mengindikasikan struktur cluster yang cukup baik. Namun, karena K-Means memiliki nilai Shadow Value tertinggi, metode ini menunjukkan kualitas pengelompokan terbaik dengan tingkat kekompakan dan pemisahan antar cluster yang paling baik dibandingkan metode lainnya.
+
+## 9.3 Kriteria Relatif (Consensus Matrix)
+
+Kriteria relatif menggunakan validasi berbasis **stabilitas** melalui teknik replikasi *bootstrap*. Konsistensi hasil clustering dievaluasi dengan **consensus matrix** berukuran $n \times n$, di mana setiap elemen merepresentasikan seberapa sering dua observasi dikelompokkan bersama sepanjang replikasi bootstrap. Cluster yang stabil menghasilkan pola **block-diagonal** pada consensus matrix.
+
+```{r fig.width=8, fig.height=6}
+# Matriks jarak dalam format matrix (dibutuhkan oleh kmed)
+dist_matrix <- as.matrix(dist_mat)
+
+# Fungsi clustering: Rank K-Medoids
+rkmfunc <- function(x, nclust) {
+  res <- rankkmed(x, nclust, m = 10, iterate = 50)
+  return(res$cluster)
+}
+
+# Bootstrap clustering (nboot=25 untuk efisiensi komputasi)
+set.seed(123)
+rkm_boot <- clustboot(dist_matrix, nclust = k_opt, nboot = 25, algorithm = rkmfunc)
+
+# Fungsi pengurutan: Ward linkage
+wardorder <- function(x, nclust) {
+  res    <- hclust(as.dist(x), method = "ward.D2")
+  member <- cutree(res, nclust)
+  return(member)
+}
+
+# Hitung consensus matrix
+consensus_rkm <- consensusmatrix(rkm_boot, nclust = k_opt, wardorder)
+
+# Visualisasi heatmap consensus matrix
+clustheatmap(consensus_rkm,
+             "Ecoli Data: Rank K-Medoids, ordered by Ward Linkage")
+```
+
+Pola block-diagonal yang terlihat jelas pada heatmap consensus matrix menunjukkan adanya tiga kelompok utama yang stabil pada data Ecoli. Area berwarna lebih pekat di sepanjang diagonal mengindikasikan bahwa pasangan observasi dalam cluster yang sama cenderung tetap dikelompokkan bersama pada berbagai replikasi bootstrap, sedangkan area yang lebih pucat di luar diagonal menunjukkan bahwa observasi dari cluster yang berbeda jarang ditempatkan dalam kelompok yang sama. Kondisi ini menunjukkan bahwa struktur cluster yang terbentuk relatif konsisten dan tidak terlalu sensitif terhadap variasi sampel maupun proses inisialisasi clustering.
+
+Secara keseluruhan, hasil consensus clustering memberikan bukti bahwa pembagian data menjadi 3 cluster memiliki tingkat stabilitas yang baik. Meskipun masih terlihat beberapa area transisi dengan intensitas warna yang tidak sepenuhnya homogen, tiga blok utama pada diagonal tetap dapat diidentifikasi dengan jelas. Hal ini mengindikasikan bahwa sebagian besar observasi memiliki kecenderungan kuat untuk berada pada cluster yang sama di berbagai replikasi bootstrap, sehingga hasil clustering dapat dianggap cukup reliabel dan representatif dalam menggambarkan struktur data Ecoli.
+
+## 9.4 Tabel Ringkasan Validasi
+
+```{r}
+hasil_validasi <- data.frame(
+  Metode       = c("K-Means (Distance-Based)",
+                   "GMM (Model-Based)",
+                   "Spectral (Graph-Based)"),
+  Purity       = round(c(purity_km, purity_gmm, purity_spec), 4),
+  Rand_Index   = round(c(ri_km,     ri_gmm,     ri_spec),     4),
+  Silhouette   = round(c(sil_km,    sil_gmm,    sil_spec),    4),
+  Shadow_Value = round(c(shadow_km, shadow_gmm, shadow_spec), 4)
+)
+
+print(hasil_validasi)
+```
+
+Berdasarkan seluruh metrik validasi yang digunakan, K-Means dan GMM menunjukkan performa yang sangat baik dan relatif seimbang, sedangkan Spectral Clustering menghasilkan performa yang lebih rendah. Pada metrik Purity, K-Means memperoleh nilai tertinggi (0,7500) dibandingkan GMM (0,7470) dan Spectral (0,6399), yang menunjukkan bahwa cluster yang dibentuk K-Means sedikit lebih homogen. Pada Rand Index, GMM memperoleh nilai tertinggi (0,8582) dengan selisih yang sangat kecil dibandingkan K-Means (0,8562), sehingga kedua metode memiliki tingkat kesesuaian yang hampir sama terhadap struktur data. Sementara itu, pada Silhouette Width dan Shadow Value, K-Means menghasilkan nilai tertinggi (0,4180) dibandingkan Spectral (0,4151) dan GMM (0,4077), yang menunjukkan kualitas pemisahan dan kekompakan cluster yang lebih baik.
+
+Secara keseluruhan, K-Means dipilih sebagai metode clustering terbaik karena memperoleh nilai tertinggi pada metrik Purity, Silhouette Width, dan Shadow Value, serta memiliki nilai Rand Index yang sangat mendekati GMM dengan selisih yang tidak signifikan. Hasil ini menunjukkan bahwa K-Means mampu menghasilkan cluster yang lebih homogen, memiliki pemisahan antar cluster yang lebih baik, dan tetap mempertahankan tingkat kesesuaian yang tinggi terhadap struktur data Ecoli. Oleh karena itu, K-Means dinilai memberikan keseimbangan terbaik antara kualitas internal cluster dan kesesuaian terhadap struktur data yang ada. Selain itu, nilai Accuracy tidak digunakan sebagai dasar evaluasi karena jumlah cluster yang digunakan (k = 3) berbeda dengan jumlah kelas asli pada dataset (8 kelas), sehingga interpretasinya menjadi kurang representatif untuk membandingkan performa metode clustering.
+
+## 9.5 Visualisasi Silhouette – Metode Terbaik
+
+Metode terbaik ditentukan berdasarkan **Rand Index tertinggi** (kriteria eksternal paling informatif, karena mempertimbangkan seluruh pasangan observasi). Plot silhouette kemudian divisualisasikan untuk metode terpilih.
+
+```{r fig.width=8, fig.height=5}
+ri_values   <- c(ri_km,     ri_gmm,     ri_spec)
+nama_metode <- c("K-Means", "GMM",      "Spectral")
+best_idx    <- which.max(ri_values)
+
+cat("Metode terbaik berdasarkan Rand Index tertinggi :",
+    nama_metode[best_idx], "\n")
+cat("Rand Index                                      :",
+    round(ri_values[best_idx], 4), "\n")
+
+sil_objs     <- list(sil_km_obj, sil_gmm_obj, sil_spec_obj)
+best_sil_obj <- sil_objs[[best_idx]]
+
+fviz_silhouette(best_sil_obj) +
+  labs(title = paste("Silhouette Plot –", nama_metode[best_idx], "(k=3)")) +
+  theme_bw()
+```
+
+Berdasarkan nilai Rand Index, metode GMM dipilih sebagai metode terbaik dengan nilai sebesar 0,8582, yang merupakan nilai tertinggi dibandingkan metode clustering lainnya. Untuk mengevaluasi kualitas internal cluster yang terbentuk, dilakukan visualisasi menggunakan Silhouette Plot. Secara umum, sebagian besar observasi memiliki nilai silhouette positif dengan rata-rata 0,4077, yang menunjukkan bahwa mayoritas objek lebih dekat dengan cluster tempatnya berada dibandingkan dengan cluster lain. Nilai ini mengindikasikan bahwa struktur cluster yang terbentuk cukup baik dan mampu memisahkan kelompok data secara memadai.
+
+Dari ketiga cluster yang terbentuk, cluster 3 (biru) menunjukkan kualitas pengelompokan terbaik dengan sebagian besar nilai silhouette berada di atas rata-rata keseluruhan. Hal ini menunjukkan bahwa anggota dalam cluster tersebut relatif homogen dan memiliki pemisahan yang baik terhadap cluster lain. Cluster 1 (merah) juga memperlihatkan kualitas yang cukup baik dengan mayoritas nilai silhouette bernilai positif dan relatif tinggi. Sebaliknya, cluster 2 (hijau) memiliki nilai silhouette yang lebih rendah dan penyebaran yang lebih bervariasi dibandingkan dua cluster lainnya, sehingga menunjukkan bahwa batas pemisah cluster ini tidak sejelas cluster 1 dan cluster 3.
+
+Selain itu, masih terdapat sejumlah kecil observasi dengan nilai silhouette negatif, terutama pada bagian akhir cluster 1 dan cluster 2. Nilai silhouette negatif mengindikasikan bahwa observasi tersebut berada dekat dengan batas antar cluster atau memiliki karakteristik yang lebih mirip dengan anggota cluster lain. Meskipun demikian, proporsi observasi dengan nilai negatif relatif kecil dibandingkan keseluruhan data. Oleh karena itu, dapat disimpulkan bahwa hasil clustering menggunakan GMM dengan k = 3 memiliki kualitas yang cukup baik, dengan mayoritas observasi terkelompok secara konsisten dan hanya sebagian kecil objek yang menunjukkan ketidakpastian dalam proses pengelompokan.
+
+# 10. Kesimpulan
+
+```{r}
+cat("RINGKASAN PERBANDINGAN METODE\n")
+print(hasil_validasi)
+
+cat("Metode terbaik per kriteria\n")
+cat("Purity tertinggi     :",
+    hasil_validasi$Metode[which.max(hasil_validasi$Purity)],      "\n")
+cat("Rand Index tertinggi :",
+    hasil_validasi$Metode[which.max(hasil_validasi$Rand_Index)],  "\n")
+cat("Silhouette tertinggi :",
+    hasil_validasi$Metode[which.max(hasil_validasi$Silhouette)],  "\n")
+```
+
+Berdasarkan hasil evaluasi menggunakan beberapa kriteria validasi, diperoleh bahwa K-Means dan GMM menunjukkan performa yang sangat baik, sedangkan Spectral Clustering menghasilkan performa yang relatif lebih rendah. Pada kriteria eksternal, nilai Purity tertinggi diperoleh oleh K-Means (0,7500), sedangkan nilai Rand Index tertinggi diperoleh oleh GMM (0,8582). Namun demikian, selisih Rand Index antara GMM dan K-Means sangat kecil (0,0020), sehingga kedua metode memiliki tingkat kesesuaian yang hampir sama terhadap struktur kelas pada data. Pada kriteria internal, K-Means menghasilkan nilai Silhouette Width tertinggi (0,4180), menunjukkan bahwa cluster yang terbentuk lebih kompak dan memiliki pemisahan yang sedikit lebih baik dibandingkan metode lainnya. Nilai Shadow Value identik dengan Silhouette Width sehingga memberikan kesimpulan yang sama.
+
+Pada kriteria relatif, heatmap consensus matrix menunjukkan pola block-diagonal yang cukup jelas, yang mengindikasikan bahwa struktur 3 cluster yang terbentuk relatif stabil pada berbagai replikasi bootstrap. Hal ini menunjukkan bahwa hasil clustering tidak terlalu dipengaruhi oleh variasi sampel maupun inisialisasi algoritma, sehingga struktur cluster yang diperoleh dapat dianggap cukup reliabel untuk merepresentasikan pola utama pada data Ecoli.
+
+Secara keseluruhan, K-Means dipilih sebagai metode clustering terbaik karena memperoleh nilai tertinggi pada metrik Purity dan Silhouette Width, serta memiliki nilai Rand Index yang hampir identik dengan GMM. Hasil ini menunjukkan bahwa K-Means mampu menghasilkan cluster yang lebih homogen, memiliki pemisahan antar cluster yang lebih baik, dan tetap mempertahankan tingkat kesesuaian yang tinggi terhadap struktur data. Dengan demikian, K-Means memberikan keseimbangan terbaik antara kualitas internal cluster dan kesesuaian terhadap kelas asli pada dataset Ecoli.
+
+Interpretasi kontekstual:
+
+- Ketidakseimbangan kelas yang sangat tinggi (rasio sekitar 72:1) menyebabkan beberapa kelas berukuran sangat kecil (`imL`, `imS`, dan `omL`) sulit terbentuk sebagai cluster tersendiri. Oleh karena itu, nilai Purity dan Rand Index secara alami memiliki batas maksimum yang lebih rendah dibandingkan dataset dengan distribusi kelas yang seimbang.
+- Variabel `chg` memiliki variasi yang sangat rendah karena hampir seluruh observasi memiliki nilai yang sama (0,50), sehingga kontribusinya terhadap proses pemisahan cluster relatif kecil.
+- Korelasi yang kuat antara `alm1` dan `alm2` (r = 0,809) menunjukkan adanya tumpang tindih informasi antar fitur, meskipun keduanya tetap dipertahankan karena masih berkontribusi dalam membedakan karakteristik protein.
+- Visualisasi PCA hanya merepresentasikan data pada dua dimensi utama, sehingga pemisahan cluster yang terlihat pada grafik tidak sepenuhnya mencerminkan struktur data asli yang berada pada tujuh dimensi fitur numerik. Oleh karena itu, evaluasi akhir lebih tepat didasarkan pada metrik validasi daripada hanya pada visualisasi dua dimensi.
